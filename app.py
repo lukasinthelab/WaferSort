@@ -618,14 +618,14 @@ def main():
     SCI_COLS = {"n_cm2", "avg_mu", "mu_xx", "mu_yy"}
     RENAME_MAP = {
         "sample": "Sample",
-        "n_cm2": "n (cm⁻²)",
-        "avg_mu": "Avg μ (cm²/Vs)",
-        "mu_xx": "μ_xx",
-        "mu_yy": "μ_yy",
+        "n_cm2": "n (cm-2)",
+        "avg_mu": "Avg mu (cm2/Vs)",
+        "mu_xx": "mu_xx",
+        "mu_yy": "mu_yy",
         "mfp_nm": "MFP (nm)",
         "has_al": "Al?",
-        "al_resistance_avg": "Al R_avg (Ω)",
-        "al_resistance_std": "Al R_std (Ω)",
+        "al_resistance_avg": "Al R_avg (Ohm)",
+        "al_resistance_std": "Al R_std (Ohm)",
         "al_est_thickness_nm": "Al t_est (nm)",
         "amount_remaining": "Remaining",
     }
@@ -676,21 +676,21 @@ def main():
 
                 mu = r.get("avg_mu")
                 if min_mobility > 0 and (pd.isna(mu) or mu < min_mobility):
-                    failed.add("Avg μ (cm²/Vs)")
+                    failed.add("Avg mu (cm2/Vs)")
                 if max_mobility > 0 and (pd.isna(mu) or mu > max_mobility):
-                    failed.add("Avg μ (cm²/Vs)")
+                    failed.add("Avg mu (cm2/Vs)")
 
                 n = r.get("n_cm2")
                 if min_density:
                     try:
                         if pd.isna(n) or n < float(min_density):
-                            failed.add("n (cm⁻²)")
+                            failed.add("n (cm-2)")
                     except ValueError:
                         pass
                 if max_density:
                     try:
                         if pd.isna(n) or n > float(max_density):
-                            failed.add("n (cm⁻²)")
+                            failed.add("n (cm-2)")
                     except ValueError:
                         pass
 
@@ -706,8 +706,8 @@ def main():
 
                 al_r = r.get("al_resistance_avg")
                 if max_al_resistance > 0 and (pd.isna(al_r) or al_r > max_al_resistance):
-                    if "Al R_avg (Ω)" in renamed_cols:
-                        failed.add("Al R_avg (Ω)")
+                    if "Al R_avg (Ohm)" in renamed_cols:
+                        failed.add("Al R_avg (Ohm)")
 
                 if min_al_thickness > 0:
                     al_t = r.get("al_measured_thickness_nm") if pd.notna(r.get("al_measured_thickness_nm")) else r.get("al_est_thickness_nm")
