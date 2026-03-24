@@ -616,19 +616,38 @@ def main():
 
     # Columns to display in scientific notation
     SCI_COLS = {"n_cm2", "avg_mu", "mu_xx", "mu_yy"}
-    RENAME_MAP = {
-        "sample": "Sample",
-        "n_cm2": "n (cm-2)",
-        "avg_mu": "Avg mu (cm2/Vs)",
-        "mu_xx": "mu_xx",
-        "mu_yy": "mu_yy",
-        "mfp_nm": "MFP (nm)",
-        "has_al": "Al?",
-        "al_resistance_avg": "Al R_avg (Ohm)",
-        "al_resistance_std": "Al R_std (Ohm)",
-        "al_est_thickness_nm": "Al t_est (nm)",
-        "amount_remaining": "Remaining",
-    }
+
+    # Unicode labels look better but crash Safari/older browsers.
+    # Default to Unicode; add ?ascii=1 to the URL as an escape hatch.
+    force_ascii = st.query_params.get("ascii", "0") == "1"
+    if force_ascii:
+        RENAME_MAP = {
+            "sample": "Sample",
+            "n_cm2": "n (cm-2)",
+            "avg_mu": "Avg mu (cm2/Vs)",
+            "mu_xx": "mu_xx",
+            "mu_yy": "mu_yy",
+            "mfp_nm": "MFP (nm)",
+            "has_al": "Al?",
+            "al_resistance_avg": "Al R_avg (Ohm)",
+            "al_resistance_std": "Al R_std (Ohm)",
+            "al_est_thickness_nm": "Al t_est (nm)",
+            "amount_remaining": "Remaining",
+        }
+    else:
+        RENAME_MAP = {
+            "sample": "Sample",
+            "n_cm2": "n (cm\u207b\u00b2)",
+            "avg_mu": "Avg \u03bc (cm\u00b2/Vs)",
+            "mu_xx": "\u03bc_xx",
+            "mu_yy": "\u03bc_yy",
+            "mfp_nm": "MFP (nm)",
+            "has_al": "Al?",
+            "al_resistance_avg": "Al R_avg (\u03a9)",
+            "al_resistance_std": "Al R_std (\u03a9)",
+            "al_est_thickness_nm": "Al t_est (nm)",
+            "amount_remaining": "Remaining",
+        }
 
     def _format_sci(df, cols_before_rename):
         """Format specified columns as scientific notation strings."""
@@ -676,48 +695,48 @@ def main():
 
                 mu = r.get("avg_mu")
                 if min_mobility > 0 and (pd.isna(mu) or mu < min_mobility):
-                    failed.add("Avg mu (cm2/Vs)")
+                    failed.add(RENAME_MAP["avg_mu"])
                 if max_mobility > 0 and (pd.isna(mu) or mu > max_mobility):
-                    failed.add("Avg mu (cm2/Vs)")
+                    failed.add(RENAME_MAP["avg_mu"])
 
                 n = r.get("n_cm2")
                 if min_density:
                     try:
                         if pd.isna(n) or n < float(min_density):
-                            failed.add("n (cm-2)")
+                            failed.add(RENAME_MAP["n_cm2"])
                     except ValueError:
                         pass
                 if max_density:
                     try:
                         if pd.isna(n) or n > float(max_density):
-                            failed.add("n (cm-2)")
+                            failed.add(RENAME_MAP["n_cm2"])
                     except ValueError:
                         pass
 
                 mfp = r.get("mfp_nm")
                 if min_mfp > 0 and (pd.isna(mfp) or mfp < min_mfp):
-                    failed.add("MFP (nm)")
+                    failed.add(RENAME_MAP["mfp_nm"])
 
                 has_al_val = r.get("has_al")
                 if al_option == "Yes" and not has_al_val:
-                    failed.add("Al?")
+                    failed.add(RENAME_MAP["has_al"])
                 elif al_option == "No" and has_al_val:
-                    failed.add("Al?")
+                    failed.add(RENAME_MAP["has_al"])
 
                 al_r = r.get("al_resistance_avg")
                 if max_al_resistance > 0 and (pd.isna(al_r) or al_r > max_al_resistance):
-                    if "Al R_avg (Ohm)" in renamed_cols:
-                        failed.add("Al R_avg (Ohm)")
+                    if RENAME_MAP["al_resistance_avg"] in renamed_cols:
+                        failed.add(RENAME_MAP["al_resistance_avg"])
 
                 if min_al_thickness > 0:
                     al_t = r.get("al_measured_thickness_nm") if pd.notna(r.get("al_measured_thickness_nm")) else r.get("al_est_thickness_nm")
                     if pd.isna(al_t) or al_t < min_al_thickness:
-                        if "Al t_est (nm)" in renamed_cols:
-                            failed.add("Al t_est (nm)")
+                        if RENAME_MAP["al_est_thickness_nm"] in renamed_cols:
+                            failed.add(RENAME_MAP["al_est_thickness_nm"])
 
                 remaining = str(r.get("amount_remaining", "")).strip().lower()
                 if available_only and (not remaining or remaining == "nan" or remaining == "none"):
-                    failed.add("Remaining")
+                    failed.add(RENAME_MAP["amount_remaining"])
 
                 return failed
 
