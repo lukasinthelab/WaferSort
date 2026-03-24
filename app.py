@@ -208,6 +208,11 @@ def load_al(sheet_id: str, tabs: dict) -> pd.DataFrame:
                  "al_tc_k", "al_bc_t", "al_measured_thickness_nm"]:
         if col in df.columns:
             df[col] = df[col].apply(_safe_float)
+    # Compute std of directional resistances (N/W/S/E)
+    r_cols = ["al_resistance_n", "al_resistance_w", "al_resistance_s", "al_resistance_e"]
+    r_present = [c for c in r_cols if c in df.columns]
+    if r_present:
+        df["al_resistance_std"] = df[r_present].std(axis=1)
     df["wafer_id"] = df["sample"].apply(_normalise_sample)
     return df
 
@@ -523,8 +528,8 @@ def main():
         search_text = st.text_input("Keyword search", value="", placeholder="e.g. JS959")
 
         st.subheader("Compare Wafer")
-        compare_input = st.text_input("Add wafer to compare", value="", placeholder="e.g. JS979 or 979",
-                                       help="Look up any wafer (even if it doesn't match filters). Failed criteria are highlighted red.")
+        compare_input = st.text_input("Add wafer(s) to compare", value="", placeholder="e.g. JS979, 984, JS1048",
+                                       help="Comma-separated list. Looks up wafers even if they don't match filters. Failed criteria are highlighted red.")
 
         refresh = st.button("Refresh data from sheet")
         if refresh:
@@ -576,7 +581,7 @@ def main():
         filtered = filtered[filtered["al_resistance_avg"].notna() & (filtered["al_resistance_avg"] <= max_al_resistance)]
     if min_al_thickness > 0:
         for col in ["al_measured_thickness_nm", "al_est_thickness_nm"]:
-            if col in filtered.columns:
+            if col in filtered.columns and filtered[col].notna().any():
                 filtered = filtered[filtered[col].notna() & (filtered[col] >= min_al_thickness)]
                 break
     if available_only:
@@ -603,7 +608,7 @@ def main():
     # Build display table
     display_cols = ["sample", "n_cm2", "avg_mu", "mu_xx", "mu_yy", "mfp_nm", "has_al"]
     if al_option != "No":
-        for c in ["al_resistance_avg", "al_est_thickness_nm"]:
+        for c in ["al_resistance_avg", "al_resistance_std", "al_est_thickness_nm"]:
             if c in filtered.columns:
                 display_cols.append(c)
     display_cols.append("amount_remaining")
@@ -620,6 +625,7 @@ def main():
         "mfp_nm": "MFP (nm)",
         "has_al": "Al?",
         "al_resistance_avg": "Al R_avg (Ω)",
+        "al_resistance_std": "Al R_std (Ω)",
         "al_est_thickness_nm": "Al t_est (nm)",
         "amount_remaining": "Remaining",
     }
@@ -648,125 +654,151 @@ def main():
         selection_mode="single-row",
     )
 
-    # ── Compare wafer ────────────────────────────────────────────────────
+    # ── Compare wafers ───────────────────────────────────────────────────
+    compare_found_rows = []
+    compare_detail_wafer_id = None
+    compare_detail_sample = None
+    compare_detail_has_al = False
     if compare_input:
-        compare_id = _normalise_sample(compare_input.strip())
-        compare_rows = master[master["wafer_id"] == compare_id]
-        if compare_rows.empty:
-            st.warning(f"Wafer '{compare_input}' not found in the data.")
-        else:
-            compare_row = compare_rows.iloc[0]
-            st.divider()
-            st.subheader(f"Comparison: {compare_row['sample']}")
+        # Parse comma-separated wafer names
+        compare_ids = [_normalise_sample(s.strip()) for s in compare_input.split(",") if s.strip()]
+        compare_ids = [cid for cid in compare_ids if cid]  # drop empties
 
-            # Build the same display columns
-            comp_df = compare_rows.head(1)[display_cols].copy()
-            comp_renamed = comp_df.rename(columns=RENAME_MAP)
-            comp_renamed = _format_sci(comp_renamed, SCI_COLS)
+        if compare_ids:
+            # Helper: determine which renamed columns a row fails
+            def _get_failed_cols(r, renamed_cols):
+                failed = set()
+                wn = pd.to_numeric(r.get("wafer_id"), errors="coerce")
+                if sample_min > 0 and (pd.isna(wn) or wn < sample_min):
+                    failed.add("Sample")
+                if sample_max > 0 and (pd.isna(wn) or wn > sample_max):
+                    failed.add("Sample")
 
-            # Determine which criteria this wafer fails
-            failed = set()
-            r = compare_row
+                mu = r.get("avg_mu")
+                if min_mobility > 0 and (pd.isna(mu) or mu < min_mobility):
+                    failed.add("Avg μ (cm²/Vs)")
+                if max_mobility > 0 and (pd.isna(mu) or mu > max_mobility):
+                    failed.add("Avg μ (cm²/Vs)")
 
-            # Sample range
-            wn = pd.to_numeric(r.get("wafer_id"), errors="coerce")
-            if sample_min > 0 and (pd.isna(wn) or wn < sample_min):
-                failed.add("Sample")
-            if sample_max > 0 and (pd.isna(wn) or wn > sample_max):
-                failed.add("Sample")
+                n = r.get("n_cm2")
+                if min_density:
+                    try:
+                        if pd.isna(n) or n < float(min_density):
+                            failed.add("n (cm⁻²)")
+                    except ValueError:
+                        pass
+                if max_density:
+                    try:
+                        if pd.isna(n) or n > float(max_density):
+                            failed.add("n (cm⁻²)")
+                    except ValueError:
+                        pass
 
-            # Mobility
-            mu = r.get("avg_mu")
-            if min_mobility > 0 and (pd.isna(mu) or mu < min_mobility):
-                failed.add("Avg μ (cm²/Vs)")
-            if max_mobility > 0 and (pd.isna(mu) or mu > max_mobility):
-                failed.add("Avg μ (cm²/Vs)")
+                mfp = r.get("mfp_nm")
+                if min_mfp > 0 and (pd.isna(mfp) or mfp < min_mfp):
+                    failed.add("MFP (nm)")
 
-            # Density
-            n = r.get("n_cm2")
-            if min_density:
-                try:
-                    v = float(min_density)
-                    if pd.isna(n) or n < v:
-                        failed.add("n (cm⁻²)")
-                except ValueError:
-                    pass
-            if max_density:
-                try:
-                    v = float(max_density)
-                    if pd.isna(n) or n > v:
-                        failed.add("n (cm⁻²)")
-                except ValueError:
-                    pass
+                has_al_val = r.get("has_al")
+                if al_option == "Yes" and not has_al_val:
+                    failed.add("Al?")
+                elif al_option == "No" and has_al_val:
+                    failed.add("Al?")
 
-            # MFP
-            mfp = r.get("mfp_nm")
-            if min_mfp > 0 and (pd.isna(mfp) or mfp < min_mfp):
-                failed.add("MFP (nm)")
+                al_r = r.get("al_resistance_avg")
+                if max_al_resistance > 0 and (pd.isna(al_r) or al_r > max_al_resistance):
+                    if "Al R_avg (Ω)" in renamed_cols:
+                        failed.add("Al R_avg (Ω)")
 
-            # Al
-            has_al_val = r.get("has_al")
-            if al_option == "Yes" and not has_al_val:
-                failed.add("Al?")
-            elif al_option == "No" and has_al_val:
-                failed.add("Al?")
+                if min_al_thickness > 0:
+                    al_t = r.get("al_measured_thickness_nm") if pd.notna(r.get("al_measured_thickness_nm")) else r.get("al_est_thickness_nm")
+                    if pd.isna(al_t) or al_t < min_al_thickness:
+                        if "Al t_est (nm)" in renamed_cols:
+                            failed.add("Al t_est (nm)")
 
-            al_r = r.get("al_resistance_avg")
-            if max_al_resistance > 0 and (pd.isna(al_r) or al_r > max_al_resistance):
-                if "Al R_avg (Ω)" in comp_renamed.columns:
-                    failed.add("Al R_avg (Ω)")
+                remaining = str(r.get("amount_remaining", "")).strip().lower()
+                if available_only and (not remaining or remaining == "nan" or remaining == "none"):
+                    failed.add("Remaining")
 
-            # Al thickness
-            if min_al_thickness > 0:
-                al_t = r.get("al_measured_thickness_nm") if pd.notna(r.get("al_measured_thickness_nm")) else r.get("al_est_thickness_nm")
-                if pd.isna(al_t) or al_t < min_al_thickness:
-                    if "Al t_est (nm)" in comp_renamed.columns:
-                        failed.add("Al t_est (nm)")
+                return failed
 
-            # Availability
-            remaining = str(r.get("amount_remaining", "")).strip().lower()
-            if available_only and (not remaining or remaining == "nan" or remaining == "none"):
-                failed.add("Remaining")
+            # Collect rows and per-row failures
+            found_rows = []
+            not_found = []
+            per_row_failed = []  # list of sets, one per found row
 
-            # Style: highlight failed cells red
-            def highlight_failed(row):
-                styles = []
-                for col in row.index:
-                    if col in failed:
-                        styles.append("background-color: #ffcccc; color: #cc0000; font-weight: bold")
-                    else:
-                        styles.append("")
-                return styles
+            for cid in compare_ids:
+                rows = master[master["wafer_id"] == cid]
+                if rows.empty:
+                    not_found.append(cid)
+                else:
+                    found_rows.append(rows.iloc[[0]])
+                    per_row_failed.append(_get_failed_cols(rows.iloc[0], set(RENAME_MAP.values())))
 
-            styled = comp_renamed.style.apply(highlight_failed, axis=1)
-            st.dataframe(styled, use_container_width=True, hide_index=True)
+            if not_found:
+                st.warning(f"Wafer(s) not found: {', '.join(not_found)}")
 
-            if failed:
-                st.caption(f"Red cells indicate criteria not met: {', '.join(sorted(failed))}")
-            else:
-                st.success("This wafer meets all current filter criteria.")
+            compare_found_rows.extend(found_rows)
+            if found_rows:
+                comp_all = pd.concat(found_rows, ignore_index=True)
+                comp_df = comp_all[display_cols].copy()
+                comp_renamed = comp_df.rename(columns=RENAME_MAP)
+                comp_renamed = _format_sci(comp_renamed, SCI_COLS)
 
-    # ── Detail panel ─────────────────────────────────────────────────────
-    selected_rows = event.selection.rows if event.selection else []
+                names = [r.iloc[0]["sample"] for r in found_rows]
+                st.divider()
+                st.subheader(f"Comparison: {', '.join(names)}")
 
-    if selected_rows:
-        idx = selected_rows[0]
-        row = filtered.iloc[idx]
-        wafer_id = row["wafer_id"]
-        sample_name = row["sample"]
+                # Selectable table with red highlights
+                def highlight_failed(row):
+                    row_idx = row.name
+                    failed = per_row_failed[row_idx] if row_idx < len(per_row_failed) else set()
+                    return [
+                        "background-color: #ffcccc; color: #cc0000; font-weight: bold" if col in failed else ""
+                        for col in row.index
+                    ]
 
+                styled = comp_renamed.style.apply(highlight_failed, axis=1)
+                compare_event = st.dataframe(
+                    styled,
+                    use_container_width=True,
+                    hide_index=True,
+                    on_select="rerun",
+                    selection_mode="single-row",
+                    key="compare_table_select",
+                )
+
+                # Summary
+                all_failed = set()
+                for f in per_row_failed:
+                    all_failed |= f
+                if all_failed:
+                    st.caption(f"Red cells indicate criteria not met: {', '.join(sorted(all_failed))}")
+                all_pass = [names[i] for i, f in enumerate(per_row_failed) if not f]
+                if all_pass:
+                    st.success(f"Meets all criteria: {', '.join(all_pass)}")
+
+                compare_selected = compare_event.selection.rows if compare_event.selection else []
+                if compare_selected:
+                    cidx = compare_selected[0]
+                    cr = comp_all.iloc[cidx]
+                    compare_detail_wafer_id = cr["wafer_id"]
+                    compare_detail_sample = cr["sample"]
+                    compare_detail_has_al = cr.get("has_al", False)
+
+    # ── Detail panel function ────────────────────────────────────────────
+    def render_detail(wafer_id, sample_name, has_al_flag, source_label=""):
+        """Render the full detail panel for a wafer."""
+        label = f"Wafer Detail: {sample_name}"
+        if source_label:
+            label += f" ({source_label})"
         st.divider()
-        st.header(f"Wafer Detail: {sample_name}")
-
-        # Link to Google Sheet
+        st.header(label)
         st.markdown(f"[View in Google Sheet]({sheet_url})")
 
         detail = get_wafer_detail(wafer_id, sheet_id, tabs)
 
-        # Layout: 3 columns
         col1, col2, col3 = st.columns(3)
 
-        # ── Transport / Hall data ────────────────────────────────────
         with col1:
             st.subheader("Transport / Hall")
             t = detail.get("transport", {})
@@ -781,7 +813,6 @@ def main():
             else:
                 st.caption("No transport data available")
 
-        # ── Al data ──────────────────────────────────────────────────
         with col2:
             st.subheader("Aluminium")
             a = detail.get("al", {})
@@ -789,30 +820,27 @@ def main():
                 st.metric("Est. thickness", fmt(a.get("al_est_thickness_nm"), "nm"))
                 st.metric("Measured thickness", fmt(a.get("al_measured_thickness_nm"), "nm"))
                 st.metric("Growth rate", fmt(a.get("al_growth_rate"), "ML/s"))
-
                 st.markdown("**Resistance (Ω):**")
                 r_data = {
-                    "Direction": ["North", "West", "South", "East", "**Average**"],
+                    "Direction": ["North", "West", "South", "East", "**Average**", "**Std Dev**"],
                     "R (Ω)": [
                         fmt(a.get("al_resistance_n")),
                         fmt(a.get("al_resistance_w")),
                         fmt(a.get("al_resistance_s")),
                         fmt(a.get("al_resistance_e")),
                         fmt(a.get("al_resistance_avg")),
+                        fmt(a.get("al_resistance_std")),
                     ],
                 }
                 st.table(pd.DataFrame(r_data))
-
                 st.metric("Tc", fmt(a.get("al_tc_k"), "K"))
                 st.metric("Bc//", fmt(a.get("al_bc_t"), "T"))
             else:
-                al_flag = row.get("has_al", False)
-                if al_flag:
+                if has_al_flag:
                     st.caption("Al wafer — no detailed Al tab data")
                 else:
                     st.caption("No Al on this wafer")
 
-        # ── AFM roughness ────────────────────────────────────────────
         with col3:
             st.subheader("AFM Roughness")
             afm = detail.get("afm", {})
@@ -829,8 +857,6 @@ def main():
                     ],
                 }
                 st.table(pd.DataFrame(afm_data))
-
-                # Roughness at different scales
                 roughness_data = {
                     "Scale": ["20x20 μm", "5x5 μm", "1x1 μm"],
                     "Roughness": [
@@ -840,15 +866,11 @@ def main():
                     ],
                 }
                 st.table(pd.DataFrame(roughness_data))
-
-                # Anisotropy
                 if afm.get("afm_anisotropy_avg_nm") is not None:
                     st.markdown("**Anisotropy:**")
                     st.metric("[110] avg", fmt(afm.get("afm_110_avg_nm"), "nm"))
                     st.metric("[1-10] avg", fmt(afm.get("afm_1_10_avg_nm"), "nm"))
                     st.metric("Anisotropy avg", fmt(afm.get("afm_anisotropy_avg_nm"), "nm"))
-
-                # Etched roughness
                 etched_vals = [afm.get("afm_etched_20x20_roughness"),
                                afm.get("afm_etched_5x5_roughness"),
                                afm.get("afm_etched_1x1_roughness")]
@@ -863,12 +885,10 @@ def main():
                         ],
                     }
                     st.table(pd.DataFrame(etched_data))
-
                 st.caption("AFM images are embedded in the Google Sheet — click the link above to view them.")
             else:
                 st.caption("No AFM data available for this wafer")
 
-        # ── Growth info ──────────────────────────────────────────────
         st.divider()
         gcol1, gcol2 = st.columns(2)
 
@@ -893,20 +913,16 @@ def main():
             else:
                 st.caption("No growth data available")
 
-        # ── Sample tracker ───────────────────────────────────────────
         with gcol2:
             st.subheader("Sample Tracker")
             tracker_entries = detail.get("tracker", [])
             if tracker_entries:
-                # Show current availability
                 first = tracker_entries[0]
-                remaining = first.get("amount_remaining", "")
-                if remaining and str(remaining) != "nan":
-                    st.metric("Amount remaining", str(remaining))
+                rem = first.get("amount_remaining", "")
+                if rem and str(rem) != "nan":
+                    st.metric("Amount remaining", str(rem))
                 else:
                     st.metric("Amount remaining", "Unknown")
-
-                # Show usage history
                 history = [e for e in tracker_entries if str(e.get("who", "")).strip() or str(e.get("purpose", "")).strip()]
                 if history:
                     st.markdown("**Usage history:**")
@@ -914,13 +930,9 @@ def main():
                     show_cols = [c for c in ["piece", "who", "date", "purpose", "tracker_notes"] if c in hist_df.columns]
                     hist_display = hist_df[show_cols].copy()
                     hist_display = hist_display.rename(columns={
-                        "piece": "Piece",
-                        "who": "Who",
-                        "date": "Date",
-                        "purpose": "Purpose",
-                        "tracker_notes": "Notes",
+                        "piece": "Piece", "who": "Who", "date": "Date",
+                        "purpose": "Purpose", "tracker_notes": "Notes",
                     })
-                    # Drop rows where all display values are empty
                     hist_display = hist_display[hist_display.apply(
                         lambda r: any(str(v).strip() and str(v) != "nan" for v in r.values), axis=1
                     )]
@@ -928,6 +940,18 @@ def main():
                         st.dataframe(hist_display, use_container_width=True, hide_index=True)
             else:
                 st.caption("No tracker data available")
+
+    # ── Detail from main results table ───────────────────────────────────
+    selected_rows = event.selection.rows if event.selection else []
+
+    if selected_rows:
+        idx = selected_rows[0]
+        row = filtered.iloc[idx]
+        render_detail(row["wafer_id"], row["sample"], row.get("has_al", False))
+
+    # ── Detail from compared wafers ──────────────────────────────────────
+    if compare_detail_wafer_id is not None:
+        render_detail(compare_detail_wafer_id, compare_detail_sample, compare_detail_has_al, "compared")
 
 
 if __name__ == "__main__":

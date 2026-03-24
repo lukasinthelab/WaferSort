@@ -377,7 +377,7 @@ def apply_filters(df: pd.DataFrame, args) -> pd.DataFrame:
 
     if args.min_al_thickness is not None:
         for col in ["al_measured_thickness_nm", "al_est_thickness_nm"]:
-            if col in result.columns:
+            if col in result.columns and result[col].notna().any():
                 result = result[
                     result[col].notna() & (result[col] >= args.min_al_thickness)
                 ]
