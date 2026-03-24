@@ -5,11 +5,20 @@ Filter and search ShabLab wafers by transport properties, aluminium characterist
 ## Quick Start
 
 ```bash
+git clone https://github.com/lukasinthelab/WaferSort.git
+cd WaferSort
 pip install -r requirements.txt
-streamlit run app.py
+python run.py
 ```
 
-The app opens in your browser. No API keys or authentication needed — it reads directly from the public Google Sheet.
+**On a Mac?**
+```bash
+python run.py --mac
+```
+
+This automatically fixes a Safari compatibility issue with column labels.
+
+No API keys or authentication needed — the app reads directly from the public Google Sheet.
 
 ## Features
 
